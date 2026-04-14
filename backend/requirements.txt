@@ -6,3 +6,4 @@ colour-science
 numpy
 Pillow
 scipy
+cv2-enumerate-cameras

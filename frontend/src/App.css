@@ -209,6 +209,9 @@
 .btn-create {
   background: var(--accent);
   color: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
 }
 
 .btn-create:hover {

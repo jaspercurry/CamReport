@@ -6,5 +6,6 @@ __pycache__/
 .env
 venv/
 sessions.json
+backend/bin/uvc-util
 screenshots/*
 !screenshots/.gitkeep

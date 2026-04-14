@@ -1,9 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { CameraSession, Corners } from '../types';
 import ScoreBadge from './ScoreBadge';
 import PatchGrid from './PatchGrid';
 import IterationHistory from './IterationHistory';
 import ImageViewer from './ImageViewer';
+import CameraFeed from './CameraFeed';
+import UVCControls from './UVCControls';
+import CalibrationProgress from './CalibrationProgress';
 
 interface Props {
   session: CameraSession;
@@ -20,6 +23,13 @@ export default function ReportCard({ session, onAnalyze, onUpdateCorners, onDele
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [debugKey, setDebugKey] = useState(0);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [showCalibration, setShowCalibration] = useState(false);
+
+  const handleCalibrationComplete = useCallback(() => {
+    // Refresh session data after calibration adds a result
+    // (parent will re-fetch sessions)
+  }, []);
 
   useEffect(() => {
     fetch('/api/images').then(r => r.json()).then(setAvailableImages);
@@ -87,6 +97,34 @@ export default function ReportCard({ session, onAnalyze, onUpdateCorners, onDele
         <div className="benchmark-item">
           <div className="benchmark-dot" style={{ background: 'var(--red)' }} />
           &gt;10 Poor
+        </div>
+      </div>
+
+      {/* Live Camera Feed */}
+      <div className="report-card" style={{ marginBottom: 16 }}>
+        <div className="report-body">
+          <div className="section-title">Live Camera</div>
+          <CameraFeed
+            existingCorners={session.corners}
+            activeDeviceId={activeDeviceId}
+            onDeviceChange={setActiveDeviceId}
+            onCornersSet={(corners, _deviceId) => {
+              onUpdateCorners(corners);
+              setDebugKey(k => k + 1);
+            }}
+            onCaptureAndAnalyze={(filename, corners, _deviceId) => {
+              onUpdateCorners(corners);
+              onAnalyze(filename, corners);
+            }}
+          />
+          {activeDeviceId && <UVCControls deviceId={activeDeviceId} />}
+          {activeDeviceId && session.corners && session.corners.length === 4 && (
+            <CalibrationProgress
+              sessionId={session.id}
+              deviceId={activeDeviceId}
+              onComplete={handleCalibrationComplete}
+            />
+          )}
         </div>
       </div>
 

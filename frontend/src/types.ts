@@ -41,3 +41,43 @@ export interface CameraSession {
 export interface Settings {
   screenshots_dir: string;
 }
+
+// V2: Camera + Calibration types
+
+export interface CameraDevice {
+  device_id: string;
+  name: string;
+  index: number;
+  vid_pid: string;
+  resolution?: number[];
+}
+
+export interface UVCControl {
+  name: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+  current: number;
+  available: boolean;
+}
+
+export interface CalibrationStepMsg {
+  type: string;
+  phase?: string;
+  phase_index?: number;
+  step?: number;
+  value?: number;
+  range?: number[];
+  error?: number;
+  mean_delta_e?: number;
+  final_delta_e?: number;
+  iterations?: number;
+  duration_s?: number;
+  controls?: Record<string, number>;
+  control?: string;
+  session_id?: string;
+  initial_delta_e?: number;
+  final_value?: number;
+  final_error?: number;
+}

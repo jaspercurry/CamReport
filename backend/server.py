@@ -6,8 +6,8 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from fastapi.responses import Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -15,6 +15,8 @@ from models import CameraSession, AnalysisRequest, SessionCreate, Settings
 from analysis import analyze_image, generate_debug_image
 from reference_data import get_patches
 from watcher import FolderWatcher
+from camera import CameraManager
+from uvc_control import get_backend
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SESSIONS_FILE = BASE_DIR / "sessions.json"
@@ -24,6 +26,11 @@ sessions: Dict[str, CameraSession] = {}
 settings = Settings()
 connected_ws: List[WebSocket] = []
 watcher: Optional[FolderWatcher] = None
+camera_mgr = CameraManager()
+uvc_backend = get_backend()
+
+# Active calibration runners (session_id -> CalibrationRunner)
+_calibration_runners: Dict[str, "CalibrationRunner"] = {}
 
 
 def load_sessions():
@@ -65,6 +72,7 @@ async def lifespan(app: FastAPI):
     yield
     if watcher:
         watcher.stop()
+    camera_mgr.close_all()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -218,6 +226,164 @@ def update_settings(body: Settings):
     watcher.start()
     save_sessions()
     return settings.dict()
+
+
+# --- Cameras ---
+
+@app.get("/api/cameras")
+def list_cameras():
+    devices = camera_mgr.list_devices()
+    return [{"device_id": d.device_id, "name": d.name, "index": d.index, "vid_pid": d.vid_pid} for d in devices]
+
+
+@app.post("/api/cameras/{device_id}/open")
+def open_camera(device_id: str):
+    try:
+        handle = camera_mgr.open_camera(device_id)
+        return {
+            "device_id": device_id,
+            "name": handle.info.name,
+            "resolution": [handle.width, handle.height],
+        }
+    except RuntimeError as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/cameras/{device_id}/preview")
+def camera_preview(device_id: str):
+    handle = camera_mgr.get_handle(device_id)
+    if not handle:
+        raise HTTPException(404, "Camera not open")
+    return StreamingResponse(
+        camera_mgr.get_preview_generator(device_id),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.post("/api/cameras/{device_id}/capture")
+def camera_capture(device_id: str):
+    """Capture a full-res frame and save to the screenshots directory."""
+    import cv2 as cv2_import
+    from datetime import datetime, timezone
+
+    frame_bgr = camera_mgr.get_latest_frame(device_id)
+    if frame_bgr is None:
+        raise HTTPException(404, "Camera not open or no frame available")
+
+    screenshots_dir = Path(settings.screenshots_dir).expanduser()
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"capture-{timestamp}.png"
+    filepath = screenshots_dir / filename
+    cv2_import.imwrite(str(filepath), frame_bgr)
+
+    return {"filename": filename, "path": str(filepath), "resolution": list(frame_bgr.shape[:2][::-1])}
+
+
+@app.delete("/api/cameras/{device_id}")
+def close_camera(device_id: str):
+    camera_mgr.close_camera(device_id)
+    return {"ok": True}
+
+
+# --- UVC Controls ---
+
+@app.get("/api/cameras/{device_id}/controls")
+def list_controls(device_id: str):
+    controls = uvc_backend.probe_controls(device_id)
+    return [
+        {
+            "name": c.name,
+            "min": c.min_val,
+            "max": c.max_val,
+            "step": c.step,
+            "default": c.default,
+            "current": c.current,
+            "available": c.available,
+        }
+        for c in controls
+    ]
+
+
+@app.put("/api/cameras/{device_id}/controls/{control_name}")
+def set_control(device_id: str, control_name: str, body: dict):
+    value = body.get("value")
+    if value is None:
+        raise HTTPException(400, "Missing 'value'")
+    ok = uvc_backend.set_control(device_id, control_name, int(value))
+    if not ok:
+        raise HTTPException(500, f"Failed to set {control_name}")
+    return {"ok": True, "name": control_name, "value": int(value)}
+
+
+@app.post("/api/cameras/{device_id}/controls/reset")
+def reset_controls(device_id: str):
+    ok = uvc_backend.reset_all(device_id)
+    return {"ok": ok}
+
+
+# --- Auto-Calibration ---
+
+@app.post("/api/sessions/{session_id}/calibrate")
+async def start_calibration(session_id: str, body: dict, background_tasks: BackgroundTasks):
+    from calibration import CalibrationRunner, CalibrationConfig
+
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+
+    device_id = body.get("device_id")
+    if not device_id:
+        raise HTTPException(400, "device_id required")
+
+    corners = body.get("corners") or s.corners
+    if not corners or len(corners) != 4:
+        raise HTTPException(400, "4 corners required")
+
+    # Check camera is open
+    if not camera_mgr.get_handle(device_id):
+        raise HTTPException(400, "Camera not open")
+
+    # Stop any existing calibration for this session
+    existing = _calibration_runners.get(session_id)
+    if existing:
+        existing.stop()
+
+    runner = CalibrationRunner(
+        camera_mgr=camera_mgr,
+        uvc_backend=uvc_backend,
+        device_id=device_id,
+        corners=corners,
+        card_type=s.card_type,
+        broadcast_fn=broadcast,
+    )
+    _calibration_runners[session_id] = runner
+
+    async def _run_calibration():
+        try:
+            result = await runner.run()
+            # Store the after analysis result in the session
+            if result.get("after_analysis"):
+                from models import AnalysisResult as AR
+                after = AR(**result["after_analysis"])
+                s.results.append(after)
+                save_sessions()
+        except Exception:
+            pass
+        finally:
+            _calibration_runners.pop(session_id, None)
+
+    background_tasks.add_task(_run_calibration)
+    return {"status": "started", "session_id": session_id}
+
+
+@app.post("/api/sessions/{session_id}/calibrate/stop")
+def stop_calibration(session_id: str):
+    runner = _calibration_runners.get(session_id)
+    if runner:
+        runner.stop()
+        return {"status": "stopped"}
+    return {"status": "not_running"}
 
 
 # Mount screenshots directory for serving images — must be LAST (catch-all)

@@ -100,34 +100,19 @@ def _find_patch_centers(img: np.ndarray, axis: int, count: int) -> List[int]:
     return [int((i + 0.5) * length / count) for i in range(count)]
 
 
-def analyze_image(
-    image_path: str,
+def analyze_frame(
+    img_rgb: np.ndarray,
     corners: List[List[float]],
     patches: List[Dict],
     card_type: int = 24,
-    screenshots_dir: str = "~/Desktop/webcam-cal",
 ) -> AnalysisResult:
-    """Run the full analysis pipeline on an image.
+    """Run the full analysis pipeline on an RGB numpy array.
 
+    img_rgb: numpy array in RGB format (H, W, 3)
     corners: 4 points [x, y] in order: top-left, top-right, bottom-right, bottom-left
     of the patch area (inside the black border).
     """
-
-    # Resolve path - could be absolute or relative to screenshots dir
-    img_path = Path(image_path).expanduser()
-    if not img_path.is_absolute():
-        base = Path(screenshots_dir).expanduser()
-        img_path = base / image_path
-
-    img = cv2.imread(str(img_path))
-    if img is None:
-        raise ValueError(f"Could not load image: {img_path}")
-
-    # Convert BGR to RGB
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
     # Auto-detect portrait vs landscape from the corner positions
-    # Measure the width (top-left to top-right) and height (top-left to bottom-left)
     tl, tr, br, bl = [np.array(c) for c in corners]
     card_width = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2
     card_height = (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2
@@ -152,8 +137,8 @@ def analyze_image(
     cropped = cv2.warpPerspective(img_rgb, M, (dst_w, dst_h))
 
     # Detect patch boundaries by finding dark divider lines
-    patch_centers_y = _find_patch_centers(cropped, axis=0, count=rows)  # row centers
-    patch_centers_x = _find_patch_centers(cropped, axis=1, count=cols)  # col centers
+    patch_centers_y = _find_patch_centers(cropped, axis=0, count=rows)
+    patch_centers_x = _find_patch_centers(cropped, axis=1, count=cols)
 
     # Analyze each patch
     patch_results: List[PatchResult] = []
@@ -163,11 +148,9 @@ def analyze_image(
         col = patch["col"]
         ref_lab = patch["lab"]
 
-        # Get the detected center for this patch and sample around it
         center_y = patch_centers_y[row]
         center_x = patch_centers_x[col]
 
-        # Estimate cell size from spacing between centers
         if row < len(patch_centers_y) - 1:
             cell_h = patch_centers_y[row + 1] - patch_centers_y[row]
         else:
@@ -177,7 +160,6 @@ def analyze_image(
         else:
             cell_w = patch_centers_x[col] - patch_centers_x[col - 1]
 
-        # Sample center 40% around the detected center
         half_h = int(cell_h * 0.20)
         half_w = int(cell_w * 0.20)
         y1 = max(0, center_y - half_h)
@@ -189,11 +171,8 @@ def analyze_image(
         if sample.size == 0:
             continue
 
-        # Mean RGB
         mean_rgb = sample.mean(axis=(0, 1))
         captured_lab = _rgb_to_lab(mean_rgb)
-
-        # Delta-E
         de = _delta_e_ciede2000(np.array(ref_lab), captured_lab)
 
         patch_results.append(PatchResult(
@@ -208,20 +187,44 @@ def analyze_image(
             is_gray=patch["is_gray"],
         ))
 
-    # Compute aggregates
     mean_de = sum(p.delta_e for p in patch_results) / max(len(patch_results), 1)
 
-    # Gray patch analysis
     gray_patches = [p for p in patch_results if p.is_gray]
     recommendations = _compute_recommendations(gray_patches, patch_results)
 
     return AnalysisResult(
-        image_path=image_path,
+        image_path="(live capture)",
         mean_delta_e=round(mean_de, 2),
         patches=patch_results,
         recommendations=recommendations,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def analyze_image(
+    image_path: str,
+    corners: List[List[float]],
+    patches: List[Dict],
+    card_type: int = 24,
+    screenshots_dir: str = "~/Desktop/webcam-cal",
+) -> AnalysisResult:
+    """Run the full analysis pipeline on an image file.
+
+    Thin wrapper around analyze_frame() that loads from disk.
+    """
+    img_path = Path(image_path).expanduser()
+    if not img_path.is_absolute():
+        base = Path(screenshots_dir).expanduser()
+        img_path = base / image_path
+
+    img = cv2.imread(str(img_path))
+    if img is None:
+        raise ValueError(f"Could not load image: {img_path}")
+
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    result = analyze_frame(img_rgb, corners, patches, card_type)
+    result.image_path = image_path
+    return result
 
 
 def generate_debug_image(
@@ -291,6 +294,50 @@ def generate_debug_image(
             cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
     return warped
+
+
+def compute_calibration_errors(patch_results: List[PatchResult]) -> Dict[str, float]:
+    """Extract numeric error signals for the auto-calibration loop.
+
+    Returns a dict with:
+      wb_error: mean b* shift on gray patches (positive = too warm)
+      brightness_error: mean L* shift on gray patches (positive = too bright)
+      saturation_error: mean (chroma_ratio - 1.0) on color patches (positive = oversaturated)
+      contrast_error: (captured_L_range - ref_L_range) / ref_L_range on gray patches
+    """
+    gray_patches = [p for p in patch_results if p.is_gray]
+    color_patches = [p for p in patch_results if not p.is_gray]
+
+    errors = {
+        "wb_error": 0.0,
+        "brightness_error": 0.0,
+        "saturation_error": 0.0,
+        "contrast_error": 0.0,
+    }
+
+    if gray_patches:
+        b_shifts = [p.captured_lab[2] - p.ref_lab[2] for p in gray_patches]
+        errors["wb_error"] = sum(b_shifts) / len(b_shifts)
+
+        l_shifts = [p.captured_lab[0] - p.ref_lab[0] for p in gray_patches]
+        errors["brightness_error"] = sum(l_shifts) / len(l_shifts)
+
+        captured_l_range = max(p.captured_lab[0] for p in gray_patches) - min(p.captured_lab[0] for p in gray_patches)
+        ref_l_range = max(p.ref_lab[0] for p in gray_patches) - min(p.ref_lab[0] for p in gray_patches)
+        if ref_l_range > 0:
+            errors["contrast_error"] = (captured_l_range - ref_l_range) / ref_l_range
+
+    if color_patches:
+        chroma_ratios = []
+        for p in color_patches:
+            ref_c = _chroma(p.ref_lab[1], p.ref_lab[2])
+            cap_c = _chroma(p.captured_lab[1], p.captured_lab[2])
+            if ref_c > 5:
+                chroma_ratios.append(cap_c / ref_c)
+        if chroma_ratios:
+            errors["saturation_error"] = sum(chroma_ratios) / len(chroma_ratios) - 1.0
+
+    return errors
 
 
 def _compute_recommendations(

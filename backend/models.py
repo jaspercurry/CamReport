@@ -53,3 +53,47 @@ class AnalysisRequest(BaseModel):
 
 class Settings(BaseModel):
     screenshots_dir: str = "~/Desktop/webcam-cal"
+
+
+# --- V2: Camera + Calibration models ---
+
+class CameraDevice(BaseModel):
+    device_id: str
+    name: str
+    index: int
+    vid_pid: str = ""
+    resolution: Optional[List[int]] = None  # [width, height]
+
+class UVCControlInfo(BaseModel):
+    name: str
+    min_val: int
+    max_val: int
+    step: int
+    default: int
+    current: int
+    available: bool = True
+
+class CalibrationErrors(BaseModel):
+    """Numeric error signals used by the auto-calibration loop."""
+    wb_error: float = 0.0           # mean b* shift on gray patches
+    brightness_error: float = 0.0    # mean L* shift on gray patches
+    saturation_error: float = 0.0    # mean (chroma_ratio - 1.0) on color patches
+    contrast_error: float = 0.0      # (captured_L_range - ref_L_range) / ref_L_range
+
+class CalibrationStep(BaseModel):
+    phase: str
+    step: int
+    control_value: int
+    search_range: List[int]  # [low, high]
+    error: float
+    mean_delta_e: float
+
+class CalibrationResult(BaseModel):
+    initial_delta_e: float
+    final_delta_e: float
+    total_iterations: int
+    duration_seconds: float
+    steps: List[CalibrationStep] = []
+    final_controls: Dict[str, int] = {}
+    before_analysis: Optional[AnalysisResult] = None
+    after_analysis: Optional[AnalysisResult] = None
