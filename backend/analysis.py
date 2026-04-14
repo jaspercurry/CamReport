@@ -49,6 +49,57 @@ def _chroma(a: float, b: float) -> float:
     return math.sqrt(a ** 2 + b ** 2)
 
 
+def _find_patch_centers(img: np.ndarray, axis: int, count: int) -> List[int]:
+    """Find the center positions of patches along an axis by detecting dark divider lines.
+
+    axis=0: find row centers (scan vertically)
+    axis=1: find column centers (scan horizontally)
+
+    Approach: average the brightness across the perpendicular axis to get a 1D profile,
+    then find local minima (divider lines) and compute patch centers between them.
+    """
+    from scipy.ndimage import uniform_filter1d
+    from scipy.signal import find_peaks
+
+    gray = np.mean(img, axis=2)
+
+    if axis == 0:
+        profile = np.mean(gray, axis=1)
+    else:
+        profile = np.mean(gray, axis=0)
+
+    length = len(profile)
+
+    # Smooth the profile
+    kernel_size = max(3, length // 50)
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    smoothed = uniform_filter1d(profile.astype(float), size=kernel_size)
+
+    # Find valleys by inverting and finding peaks
+    inverted = -smoothed
+    # Minimum distance between dividers: at least 50% of expected cell size
+    min_distance = int(length / count * 0.5)
+    peaks, properties = find_peaks(inverted, distance=min_distance, prominence=5)
+
+    # We expect (count - 1) internal dividers
+    if len(peaks) >= count - 1:
+        # Sort by prominence and take the top (count - 1)
+        prominences = properties['prominences']
+        top_indices = np.argsort(prominences)[::-1][:count - 1]
+        dividers = sorted(peaks[top_indices])
+
+        # Compute centers between dividers
+        boundaries = [0] + list(dividers) + [length]
+        centers = []
+        for i in range(count):
+            centers.append((boundaries[i] + boundaries[i + 1]) // 2)
+        return centers
+
+    # Fallback: evenly spaced centers
+    return [int((i + 0.5) * length / count) for i in range(count)]
+
+
 def analyze_image(
     image_path: str,
     corners: List[List[float]],
@@ -100,10 +151,9 @@ def analyze_image(
     M = cv2.getPerspectiveTransform(src_pts, dst_pts)
     cropped = cv2.warpPerspective(img_rgb, M, (dst_w, dst_h))
 
-    w = dst_w
-    h = dst_h
-    cell_h = h / rows
-    cell_w = w / cols
+    # Detect patch boundaries by finding dark divider lines
+    patch_centers_y = _find_patch_centers(cropped, axis=0, count=rows)  # row centers
+    patch_centers_x = _find_patch_centers(cropped, axis=1, count=cols)  # col centers
 
     # Analyze each patch
     patch_results: List[PatchResult] = []
@@ -113,16 +163,28 @@ def analyze_image(
         col = patch["col"]
         ref_lab = patch["lab"]
 
-        # Cell boundaries
-        cy = int(row * cell_h)
-        cx = int(col * cell_w)
-        ch = int(cell_h)
-        cw = int(cell_w)
+        # Get the detected center for this patch and sample around it
+        center_y = patch_centers_y[row]
+        center_x = patch_centers_x[col]
 
-        # Sample center 40% to avoid black divider lines between patches
-        margin_y = int(ch * 0.30)
-        margin_x = int(cw * 0.30)
-        sample = cropped[cy + margin_y:cy + ch - margin_y, cx + margin_x:cx + cw - margin_x]
+        # Estimate cell size from spacing between centers
+        if row < len(patch_centers_y) - 1:
+            cell_h = patch_centers_y[row + 1] - patch_centers_y[row]
+        else:
+            cell_h = patch_centers_y[row] - patch_centers_y[row - 1]
+        if col < len(patch_centers_x) - 1:
+            cell_w = patch_centers_x[col + 1] - patch_centers_x[col]
+        else:
+            cell_w = patch_centers_x[col] - patch_centers_x[col - 1]
+
+        # Sample center 40% around the detected center
+        half_h = int(cell_h * 0.20)
+        half_w = int(cell_w * 0.20)
+        y1 = max(0, center_y - half_h)
+        y2 = min(dst_h, center_y + half_h)
+        x1 = max(0, center_x - half_w)
+        x2 = min(dst_w, center_x + half_w)
+        sample = cropped[y1:y2, x1:x2]
 
         if sample.size == 0:
             continue
@@ -194,30 +256,38 @@ def generate_debug_image(
     M = cv2.getPerspectiveTransform(src_pts, dst_pts)
     warped = cv2.warpPerspective(img_rgb, M, (dst_w, dst_h))
 
-    cell_h = dst_h / rows
-    cell_w = dst_w / cols
+    # Detect patch centers using the same algorithm as analysis
+    centers_y = _find_patch_centers(warped, axis=0, count=rows)
+    centers_x = _find_patch_centers(warped, axis=1, count=cols)
 
-    # Draw grid lines (white, thin)
-    for r in range(rows + 1):
-        y = int(r * cell_h)
-        cv2.line(warped, (0, y), (dst_w, y), (255, 255, 255), 1)
-    for c in range(cols + 1):
-        x = int(c * cell_w)
-        cv2.line(warped, (x, 0), (x, dst_h), (255, 255, 255), 1)
+    # Draw detected center lines (white, thin)
+    for cy in centers_y:
+        cv2.line(warped, (0, cy), (dst_w, cy), (255, 255, 255), 1)
+    for cx in centers_x:
+        cv2.line(warped, (cx, 0), (cx, dst_h), (255, 255, 255), 1)
 
-    # Draw sampling regions (green rectangles)
-    for r in range(rows):
-        for c in range(cols):
-            cy = int(r * cell_h)
-            cx = int(c * cell_w)
-            ch = int(cell_h)
-            cw = int(cell_w)
-            margin_y = int(ch * 0.30)
-            margin_x = int(cw * 0.30)
-            x1 = cx + margin_x
-            y1 = cy + margin_y
-            x2 = cx + cw - margin_x
-            y2 = cy + ch - margin_y
+    # Draw sampling regions (green rectangles) around detected centers
+    for ri in range(rows):
+        for ci in range(cols):
+            center_y = centers_y[ri]
+            center_x = centers_x[ci]
+
+            # Estimate cell size from spacing
+            if ri < rows - 1:
+                cell_h = centers_y[ri + 1] - centers_y[ri]
+            else:
+                cell_h = centers_y[ri] - centers_y[ri - 1]
+            if ci < cols - 1:
+                cell_w = centers_x[ci + 1] - centers_x[ci]
+            else:
+                cell_w = centers_x[ci] - centers_x[ci - 1]
+
+            half_h = int(cell_h * 0.20)
+            half_w = int(cell_w * 0.20)
+            x1 = max(0, center_x - half_w)
+            y1 = max(0, center_y - half_h)
+            x2 = min(dst_w, center_x + half_w)
+            y2 = min(dst_h, center_y + half_h)
             cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
     return warped
