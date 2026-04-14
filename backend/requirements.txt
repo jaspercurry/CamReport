@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+watchdog
+opencv-contrib-python
+colour-science
+numpy
+Pillow
