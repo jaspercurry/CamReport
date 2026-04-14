@@ -7,11 +7,12 @@ from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from models import CameraSession, AnalysisRequest, SessionCreate, Settings
-from analysis import analyze_image
+from analysis import analyze_image, generate_debug_image
 from reference_data import get_patches
 from watcher import FolderWatcher
 
@@ -160,6 +161,27 @@ def analyze(session_id: str, body: AnalysisRequest):
     s.results.append(result)
     save_sessions()
     return result.dict()
+
+
+@app.get("/api/sessions/{session_id}/debug-image")
+def get_debug_image(session_id: str):
+    """Return the warped card image with grid lines and sampling regions overlaid."""
+    s = sessions.get(session_id)
+    if not s:
+        raise HTTPException(404, "Session not found")
+    if not s.corners or len(s.corners) != 4:
+        raise HTTPException(400, "No corners defined")
+    if not s.results:
+        raise HTTPException(400, "No analysis results yet")
+
+    import cv2 as cv2_import
+    debug_img = generate_debug_image(
+        s.results[-1].image_path, s.corners, s.card_type, settings.screenshots_dir
+    )
+    # Encode as PNG
+    debug_bgr = cv2_import.cvtColor(debug_img, cv2_import.COLOR_RGB2BGR)
+    _, png_data = cv2_import.imencode('.png', debug_bgr)
+    return Response(content=png_data.tobytes(), media_type="image/png")
 
 
 # --- Images ---

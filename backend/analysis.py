@@ -119,9 +119,9 @@ def analyze_image(
         ch = int(cell_h)
         cw = int(cell_w)
 
-        # Sample center 50%
-        margin_y = int(ch * 0.25)
-        margin_x = int(cw * 0.25)
+        # Sample center 40% to avoid black divider lines between patches
+        margin_y = int(ch * 0.30)
+        margin_x = int(cw * 0.30)
         sample = cropped[cy + margin_y:cy + ch - margin_y, cx + margin_x:cx + cw - margin_x]
 
         if sample.size == 0:
@@ -160,6 +160,67 @@ def analyze_image(
         recommendations=recommendations,
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def generate_debug_image(
+    image_path: str,
+    corners: List[List[float]],
+    card_type: int = 24,
+    screenshots_dir: str = "~/Desktop/webcam-cal",
+) -> np.ndarray:
+    """Generate a debug image showing the warped card with sampling regions outlined."""
+    img_path = Path(image_path).expanduser()
+    if not img_path.is_absolute():
+        base = Path(screenshots_dir).expanduser()
+        img_path = base / image_path
+
+    img = cv2.imread(str(img_path))
+    if img is None:
+        raise ValueError(f"Could not load image: {img_path}")
+
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    tl, tr, br, bl = [np.array(c) for c in corners]
+    card_width = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2
+    card_height = (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2
+    portrait = card_height > card_width
+
+    rows, cols = get_grid_size(card_type, portrait=portrait)
+    dst_w = int(cols * 100)
+    dst_h = int(rows * 100)
+
+    src_pts = np.array(corners, dtype=np.float32)
+    dst_pts = np.array([[0, 0], [dst_w, 0], [dst_w, dst_h], [0, dst_h]], dtype=np.float32)
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    warped = cv2.warpPerspective(img_rgb, M, (dst_w, dst_h))
+
+    cell_h = dst_h / rows
+    cell_w = dst_w / cols
+
+    # Draw grid lines (white, thin)
+    for r in range(rows + 1):
+        y = int(r * cell_h)
+        cv2.line(warped, (0, y), (dst_w, y), (255, 255, 255), 1)
+    for c in range(cols + 1):
+        x = int(c * cell_w)
+        cv2.line(warped, (x, 0), (x, dst_h), (255, 255, 255), 1)
+
+    # Draw sampling regions (green rectangles)
+    for r in range(rows):
+        for c in range(cols):
+            cy = int(r * cell_h)
+            cx = int(c * cell_w)
+            ch = int(cell_h)
+            cw = int(cell_w)
+            margin_y = int(ch * 0.30)
+            margin_x = int(cw * 0.30)
+            x1 = cx + margin_x
+            y1 = cy + margin_y
+            x2 = cx + cw - margin_x
+            y2 = cy + ch - margin_y
+            cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    return warped
 
 
 def _compute_recommendations(

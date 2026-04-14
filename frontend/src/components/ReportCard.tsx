@@ -18,6 +18,8 @@ export default function ReportCard({ session, onAnalyze, onUpdateCorners, onDele
   const [availableImages, setAvailableImages] = useState<string[]>([]);
   const [showImagePicker, setShowImagePicker] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugKey, setDebugKey] = useState(0);
 
   useEffect(() => {
     fetch('/api/images').then(r => r.json()).then(setAvailableImages);
@@ -46,6 +48,7 @@ export default function ReportCard({ session, onAnalyze, onUpdateCorners, onDele
   const handleCornersSet = (corners: Corners) => {
     setPickMode(false);
     onUpdateCorners(corners);
+    setDebugKey(k => k + 1);
 
     // If we have a current image, re-analyze with the new corners
     if (result) {
@@ -250,6 +253,31 @@ export default function ReportCard({ session, onAnalyze, onUpdateCorners, onDele
                     Color Patches (left = reference, right = captured)
                   </div>
                   <PatchGrid patches={result.patches} rows={gridRows} cols={gridCols} />
+                </div>
+              )}
+
+              {/* Debug: warped card with sampling regions */}
+              {result && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                    <div className="section-title" style={{ margin: 0 }}>Sampling Debug View</div>
+                    <button className="btn-redraw" onClick={() => { setShowDebug(!showDebug); setDebugKey(k => k + 1); }}>
+                      {showDebug ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                  {showDebug && (
+                    <div style={{ borderRadius: 8, overflow: 'hidden', background: 'var(--bg-tertiary)' }}>
+                      <img
+                        key={debugKey}
+                        src={`/api/sessions/${session.id}/debug-image?t=${debugKey}`}
+                        alt="Debug: warped card with sampling regions"
+                        style={{ width: '100%', display: 'block' }}
+                      />
+                      <div style={{ padding: '8px 12px', fontSize: 12, color: 'var(--text-secondary)' }}>
+                        White lines = grid cell boundaries. Green rectangles = center 40% sampling area for each patch.
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
