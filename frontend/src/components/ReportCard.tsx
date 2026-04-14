@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import type { CameraSession, Rectangle } from '../types';
+import type { CameraSession, Corners } from '../types';
 import ScoreBadge from './ScoreBadge';
 import PatchGrid from './PatchGrid';
 import IterationHistory from './IterationHistory';
@@ -7,14 +7,14 @@ import ImageViewer from './ImageViewer';
 
 interface Props {
   session: CameraSession;
-  onAnalyze: (imagePath: string, rectangle?: Rectangle) => void;
-  onUpdateRectangle: (rect: Rectangle) => void;
+  onAnalyze: (imagePath: string, corners?: Corners) => void;
+  onUpdateCorners: (corners: Corners) => void;
   onDelete: () => void;
 }
 
-export default function ReportCard({ session, onAnalyze, onUpdateRectangle, onDelete }: Props) {
+export default function ReportCard({ session, onAnalyze, onUpdateCorners, onDelete }: Props) {
   const [viewIndex, setViewIndex] = useState<number | null>(null);
-  const [drawMode, setDrawMode] = useState(false);
+  const [pickMode, setPickMode] = useState(false);
   const [availableImages, setAvailableImages] = useState<string[]>([]);
   const [showImagePicker, setShowImagePicker] = useState(false);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -26,18 +26,30 @@ export default function ReportCard({ session, onAnalyze, onUpdateRectangle, onDe
   const currentIndex = viewIndex ?? (session.results.length - 1);
   const result = session.results[currentIndex] ?? null;
   const hasResults = session.results.length > 0;
-  // Detect portrait from rectangle aspect ratio
-  const isPortrait = session.rectangle ? session.rectangle.height > session.rectangle.width : false;
-  const gridRows = session.card_type === 48 ? (isPortrait ? 6 : 8) : (isPortrait ? 6 : 4);
-  const gridCols = session.card_type === 48 ? (isPortrait ? 8 : 6) : (isPortrait ? 4 : 6);
 
-  const handleRectangleDrawn = (rect: Rectangle) => {
-    setDrawMode(false);
-    onUpdateRectangle(rect);
+  // Detect portrait from corners geometry
+  const getGridDims = () => {
+    if (!session.corners || session.corners.length < 4) {
+      return session.card_type === 48 ? { rows: 8, cols: 6 } : { rows: 6, cols: 4 };
+    }
+    const [tl, tr, , bl] = session.corners;
+    const w = Math.sqrt((tr[0] - tl[0]) ** 2 + (tr[1] - tl[1]) ** 2);
+    const h = Math.sqrt((bl[0] - tl[0]) ** 2 + (bl[1] - tl[1]) ** 2);
+    const isPortrait = h > w;
+    if (session.card_type === 48) {
+      return isPortrait ? { rows: 6, cols: 8 } : { rows: 8, cols: 6 };
+    }
+    return isPortrait ? { rows: 6, cols: 4 } : { rows: 4, cols: 6 };
+  };
+  const { rows: gridRows, cols: gridCols } = getGridDims();
 
-    // If we have a current image, re-analyze with the new rectangle
+  const handleCornersSet = (corners: Corners) => {
+    setPickMode(false);
+    onUpdateCorners(corners);
+
+    // If we have a current image, re-analyze with the new corners
     if (result) {
-      onAnalyze(result.image_path, rect);
+      onAnalyze(result.image_path, corners);
     }
   };
 
@@ -91,7 +103,7 @@ export default function ReportCard({ session, onAnalyze, onUpdateRectangle, onDe
                   {availableImages.map(img => (
                     <button
                       key={img}
-                      onClick={() => { setSelectedImage(img); setDrawMode(true); }}
+                      onClick={() => { setSelectedImage(img); setPickMode(true); }}
                       style={{
                         padding: '10px 16px',
                         background: 'var(--bg-tertiary)',
@@ -117,22 +129,22 @@ export default function ReportCard({ session, onAnalyze, onUpdateRectangle, onDe
         <div className="report-card">
           <div className="report-body">
             <div style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8 }}>
-              Draw a rectangle around the SpyderCheckr card, then the analysis will run automatically.
+              Click the 4 corners of the patch area (inside the black border), starting from the top-left.
             </div>
             <ImageViewer
               imagePath={selectedImage}
-              rectangle={null}
-              onRectangleDrawn={(rect) => {
-                setDrawMode(false);
-                onUpdateRectangle(rect);
-                onAnalyze(selectedImage, rect);
+              corners={null}
+              onCornersSet={(corners) => {
+                setPickMode(false);
+                onUpdateCorners(corners);
+                onAnalyze(selectedImage, corners);
                 setSelectedImage(null);
               }}
-              drawMode={true}
+              pickMode={true}
             />
             <button
               className="btn-redraw"
-              onClick={() => { setSelectedImage(null); setDrawMode(false); }}
+              onClick={() => { setSelectedImage(null); setPickMode(false); }}
               style={{ alignSelf: 'flex-start' }}
             >
               Back to image list
@@ -181,7 +193,7 @@ export default function ReportCard({ session, onAnalyze, onUpdateRectangle, onDe
                       key={img}
                       onClick={() => {
                         setShowImagePicker(false);
-                        onAnalyze(img, session.rectangle || undefined);
+                        onAnalyze(img, session.corners || undefined);
                       }}
                       style={{
                         display: 'block', width: '100%', padding: '8px 12px',
@@ -246,20 +258,20 @@ export default function ReportCard({ session, onAnalyze, onUpdateRectangle, onDe
                 <IterationHistory results={session.results} />
               )}
 
-              {/* Image with rectangle */}
+              {/* Image with corners */}
               {result && (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                     <div className="section-title" style={{ margin: 0 }}>Analyzed Image</div>
-                    <button className="btn-redraw" onClick={() => setDrawMode(!drawMode)}>
-                      {drawMode ? 'Cancel' : 'Redraw Rectangle'}
+                    <button className="btn-redraw" onClick={() => setPickMode(!pickMode)}>
+                      {pickMode ? 'Cancel' : 'Pick New Corners'}
                     </button>
                   </div>
                   <ImageViewer
                     imagePath={result.image_path}
-                    rectangle={session.rectangle}
-                    onRectangleDrawn={handleRectangleDrawn}
-                    drawMode={drawMode}
+                    corners={session.corners}
+                    onCornersSet={handleCornersSet}
+                    pickMode={pickMode}
                   />
                 </div>
               )}

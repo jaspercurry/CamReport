@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import './App.css';
 import { useWebSocket } from './hooks/useWebSocket';
-import type { CameraSession } from './types';
+import type { CameraSession, Corners } from './types';
 import Sidebar from './components/Sidebar';
 import ReportCard from './components/ReportCard';
 import Dashboard from './components/Dashboard';
@@ -59,31 +59,31 @@ function App() {
     }
   };
 
-  const handleAnalyze = async (imagePath: string, rectangle?: { x: number; y: number; width: number; height: number }) => {
+  const handleAnalyze = async (imagePath: string, corners?: Corners) => {
     if (!activeSession) return;
     const res = await fetch(`/api/sessions/${activeSession.id}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image_path: imagePath, rectangle }),
+      body: JSON.stringify({ image_path: imagePath, corners }),
     });
     if (res.ok) {
       await fetchSessions();
     }
   };
 
-  const handleUpdateRectangle = async (rect: { x: number; y: number; width: number; height: number }) => {
+  const handleUpdateCorners = async (corners: Corners) => {
     if (!activeSession) return;
-    await fetch(`/api/sessions/${activeSession.id}/rectangle`, {
+    await fetch(`/api/sessions/${activeSession.id}/corners`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rectangle: rect }),
+      body: JSON.stringify({ corners }),
     });
     await fetchSessions();
   };
 
   const handleAssignImage = () => {
     if (pendingImage && activeSession) {
-      handleAnalyze(pendingImage, activeSession.rectangle || undefined);
+      handleAnalyze(pendingImage, activeSession.corners || undefined);
     }
     setPendingImage(null);
   };
@@ -131,7 +131,7 @@ function App() {
           <ReportCard
             session={activeSession}
             onAnalyze={handleAnalyze}
-            onUpdateRectangle={handleUpdateRectangle}
+            onUpdateCorners={handleUpdateCorners}
             onDelete={() => deleteSession(activeSession.id)}
           />
         ) : (
@@ -172,7 +172,7 @@ function App() {
             <div className="form-group">
               <label>SpyderCheckr Card</label>
               <select value={newCardType} onChange={e => setNewCardType(Number(e.target.value))}>
-                <option value={24}>SpyderCheckr 24 (4x6 grid)</option>
+                <option value={24}>SpyderCheckr 24 (6x4 grid)</option>
                 <option value={48}>SpyderCheckr 48 (8x6 grid)</option>
               </select>
             </div>

@@ -1,41 +1,36 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
-import type { Rectangle } from '../types';
+import type { Corners } from '../types';
 
 interface Props {
   imagePath: string;
-  rectangle: Rectangle | null;
-  onRectangleDrawn: (rect: Rectangle) => void;
-  drawMode: boolean;
+  corners: Corners | null;
+  onCornersSet: (corners: Corners) => void;
+  pickMode: boolean;
 }
 
-export default function ImageViewer({ imagePath, rectangle, onRectangleDrawn, drawMode }: Props) {
-  const containerRef = useRef<HTMLDivElement>(null);
+const CORNER_LABELS = ['Top-Left', 'Top-Right', 'Bottom-Right', 'Bottom-Left'];
+
+export default function ImageViewer({ imagePath, corners, onCornersSet, pickMode }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
-  const [drawing, setDrawing] = useState(false);
-  const [startPos, setStartPos] = useState<{ x: number; y: number } | null>(null);
-  const [currentPos, setCurrentPos] = useState<{ x: number; y: number } | null>(null);
   const [imageSize, setImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [pendingCorners, setPendingCorners] = useState<[number, number][]>([]);
 
-  const getScaledCoords = useCallback((e: React.MouseEvent) => {
+  const getImageCoords = useCallback((e: React.MouseEvent): [number, number] | null => {
     const canvas = canvasRef.current;
-    const img = imgRef.current;
-    if (!canvas || !img || !imageSize) return null;
-
+    if (!canvas || !imageSize) return null;
     const rect = canvas.getBoundingClientRect();
     const scaleX = imageSize.width / rect.width;
     const scaleY = imageSize.height / rect.height;
-
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-    };
+    return [
+      (e.clientX - rect.left) * scaleX,
+      (e.clientY - rect.top) * scaleY,
+    ];
   }, [imageSize]);
 
-  const drawRect = useCallback(() => {
+  const drawOverlay = useCallback(() => {
     const canvas = canvasRef.current;
-    const img = imgRef.current;
-    if (!canvas || !img || !imageSize) return;
+    if (!canvas || !imageSize) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -44,53 +39,81 @@ export default function ImageViewer({ imagePath, rectangle, onRectangleDrawn, dr
     canvas.width = displayRect.width * 2;
     canvas.height = displayRect.height * 2;
     ctx.scale(2, 2);
-
     ctx.clearRect(0, 0, displayRect.width, displayRect.height);
 
     const scaleX = displayRect.width / imageSize.width;
     const scaleY = displayRect.height / imageSize.height;
 
-    // Draw existing rectangle
-    const rectToDraw = drawing && startPos && currentPos
-      ? {
-          x: Math.min(startPos.x, currentPos.x),
-          y: Math.min(startPos.y, currentPos.y),
-          width: Math.abs(currentPos.x - startPos.x),
-          height: Math.abs(currentPos.y - startPos.y),
-        }
-      : rectangle;
+    const pointsToDraw = pickMode ? pendingCorners : (corners || []);
 
-    if (rectToDraw) {
-      ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth = 2;
-      ctx.setLineDash(drawing ? [6, 4] : []);
-      ctx.strokeRect(
-        rectToDraw.x * scaleX,
-        rectToDraw.y * scaleY,
-        rectToDraw.width * scaleX,
-        rectToDraw.height * scaleY,
-      );
+    if (pointsToDraw.length === 0) return;
 
-      // Dim area outside rectangle
-      if (!drawing) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-        // Top
-        ctx.fillRect(0, 0, displayRect.width, rectToDraw.y * scaleY);
-        // Bottom
-        const bottomY = (rectToDraw.y + rectToDraw.height) * scaleY;
-        ctx.fillRect(0, bottomY, displayRect.width, displayRect.height - bottomY);
-        // Left
-        ctx.fillRect(0, rectToDraw.y * scaleY, rectToDraw.x * scaleX, rectToDraw.height * scaleY);
-        // Right
-        const rightX = (rectToDraw.x + rectToDraw.width) * scaleX;
-        ctx.fillRect(rightX, rectToDraw.y * scaleY, displayRect.width - rightX, rectToDraw.height * scaleY);
+    // Draw the polygon outline
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 2;
+    ctx.setLineDash(pickMode && pointsToDraw.length < 4 ? [6, 4] : []);
+
+    if (pointsToDraw.length >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(pointsToDraw[0][0] * scaleX, pointsToDraw[0][1] * scaleY);
+      for (let i = 1; i < pointsToDraw.length; i++) {
+        ctx.lineTo(pointsToDraw[i][0] * scaleX, pointsToDraw[i][1] * scaleY);
       }
+      if (pointsToDraw.length === 4) {
+        ctx.closePath();
+      }
+      ctx.stroke();
     }
-  }, [rectangle, drawing, startPos, currentPos, imageSize]);
+
+    // Dim area outside the quadrilateral (only when we have all 4 corners and not picking)
+    if (pointsToDraw.length === 4 && !pickMode) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      ctx.beginPath();
+      ctx.rect(0, 0, displayRect.width, displayRect.height);
+      ctx.moveTo(pointsToDraw[0][0] * scaleX, pointsToDraw[0][1] * scaleY);
+      for (let i = 1; i < 4; i++) {
+        ctx.lineTo(pointsToDraw[i][0] * scaleX, pointsToDraw[i][1] * scaleY);
+      }
+      ctx.closePath();
+      ctx.fill('evenodd');
+      ctx.restore();
+    }
+
+    // Draw corner points
+    for (let i = 0; i < pointsToDraw.length; i++) {
+      const [px, py] = pointsToDraw[i];
+      const sx = px * scaleX;
+      const sy = py * scaleY;
+
+      // Circle
+      ctx.fillStyle = '#3b82f6';
+      ctx.beginPath();
+      ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // White center
+      ctx.fillStyle = 'white';
+      ctx.beginPath();
+      ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Label
+      ctx.fillStyle = 'white';
+      ctx.font = '11px -apple-system, sans-serif';
+      ctx.fillText(CORNER_LABELS[i], sx + 10, sy - 8);
+    }
+  }, [corners, pendingCorners, pickMode, imageSize]);
 
   useEffect(() => {
-    drawRect();
-  }, [drawRect]);
+    drawOverlay();
+  }, [drawOverlay]);
+
+  useEffect(() => {
+    if (pickMode) {
+      setPendingCorners([]);
+    }
+  }, [pickMode]);
 
   const handleImageLoad = () => {
     const img = imgRef.current;
@@ -99,47 +122,25 @@ export default function ImageViewer({ imagePath, rectangle, onRectangleDrawn, dr
     }
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (!drawMode) return;
-    const coords = getScaledCoords(e);
-    if (coords) {
-      setDrawing(true);
-      setStartPos(coords);
-      setCurrentPos(coords);
+  const handleClick = (e: React.MouseEvent) => {
+    if (!pickMode) return;
+    const coords = getImageCoords(e);
+    if (!coords) return;
+
+    const updated = [...pendingCorners, coords] as [number, number][];
+    if (updated.length === 4) {
+      setPendingCorners(updated);
+      onCornersSet(updated);
+    } else {
+      setPendingCorners(updated);
     }
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!drawing) return;
-    const coords = getScaledCoords(e);
-    if (coords) {
-      setCurrentPos(coords);
-    }
-  };
-
-  const handleMouseUp = () => {
-    if (!drawing || !startPos || !currentPos) return;
-    setDrawing(false);
-
-    const rect: Rectangle = {
-      x: Math.min(startPos.x, currentPos.x),
-      y: Math.min(startPos.y, currentPos.y),
-      width: Math.abs(currentPos.x - startPos.x),
-      height: Math.abs(currentPos.y - startPos.y),
-    };
-
-    if (rect.width > 10 && rect.height > 10) {
-      onRectangleDrawn(rect);
-    }
-
-    setStartPos(null);
-    setCurrentPos(null);
   };
 
   const imageUrl = `/screenshots/${imagePath}`;
+  const remaining = 4 - pendingCorners.length;
 
   return (
-    <div className="image-viewer" ref={containerRef}>
+    <div className="image-viewer">
       <img
         ref={imgRef}
         src={imageUrl}
@@ -149,15 +150,15 @@ export default function ImageViewer({ imagePath, rectangle, onRectangleDrawn, dr
       />
       <canvas
         ref={canvasRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
-        style={{ cursor: drawMode ? 'crosshair' : 'default' }}
+        onClick={handleClick}
+        style={{ cursor: pickMode ? 'crosshair' : 'default' }}
       />
-      {drawMode && !rectangle && (
-        <div className="draw-prompt">
-          Click and drag to select the SpyderCheckr card
+      {pickMode && remaining > 0 && (
+        <div className="draw-prompt" style={{ pointerEvents: 'none', flexDirection: 'column', gap: 4 }}>
+          <div>Click the {CORNER_LABELS[4 - remaining]} corner of the patch area</div>
+          <div style={{ fontSize: 13, opacity: 0.7 }}>
+            {remaining} {remaining === 1 ? 'point' : 'points'} remaining — click inside the black border
+          </div>
         </div>
       )}
     </div>

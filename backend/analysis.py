@@ -51,12 +51,16 @@ def _chroma(a: float, b: float) -> float:
 
 def analyze_image(
     image_path: str,
-    rectangle: Dict,
+    corners: List[List[float]],
     patches: List[Dict],
     card_type: int = 24,
     screenshots_dir: str = "~/Desktop/webcam-cal",
 ) -> AnalysisResult:
-    """Run the full analysis pipeline on an image."""
+    """Run the full analysis pipeline on an image.
+
+    corners: 4 points [x, y] in order: top-left, top-right, bottom-right, bottom-left
+    of the patch area (inside the black border).
+    """
 
     # Resolve path - could be absolute or relative to screenshots dir
     img_path = Path(image_path).expanduser()
@@ -71,18 +75,33 @@ def analyze_image(
     # Convert BGR to RGB
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    # Crop to rectangle
-    x = int(rectangle["x"])
-    y = int(rectangle["y"])
-    w = int(rectangle["width"])
-    h = int(rectangle["height"])
-    cropped = img_rgb[y:y + h, x:x + w]
-
-    # Auto-detect portrait vs landscape from rectangle aspect ratio
-    portrait = h > w
+    # Auto-detect portrait vs landscape from the corner positions
+    # Measure the width (top-left to top-right) and height (top-left to bottom-left)
+    tl, tr, br, bl = [np.array(c) for c in corners]
+    card_width = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2
+    card_height = (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2
+    portrait = card_height > card_width
 
     # Determine grid size
     rows, cols = get_grid_size(card_type, portrait=portrait)
+
+    # Perspective warp: map the 4 corners to a perfect rectangle
+    dst_w = int(cols * 100)  # 100px per cell for good sampling resolution
+    dst_h = int(rows * 100)
+
+    src_pts = np.array(corners, dtype=np.float32)
+    dst_pts = np.array([
+        [0, 0],
+        [dst_w, 0],
+        [dst_w, dst_h],
+        [0, dst_h],
+    ], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(src_pts, dst_pts)
+    cropped = cv2.warpPerspective(img_rgb, M, (dst_w, dst_h))
+
+    w = dst_w
+    h = dst_h
     cell_h = h / rows
     cell_w = w / cols
 

@@ -32,11 +32,12 @@ class AnalysisResult(BaseModel):
     timestamp: str
 
 
+# Corners: list of 4 [x, y] points in order: top-left, top-right, bottom-right, bottom-left
 class CameraSession(BaseModel):
     id: str
     name: str
     card_type: int = 24
-    rectangle: Optional[Dict] = None  # {x, y, width, height} in image coords
+    corners: Optional[List[List[float]]] = None
     results: List[AnalysisResult] = []
 
 
@@ -47,7 +48,7 @@ class SessionCreate(BaseModel):
 
 class AnalysisRequest(BaseModel):
     image_path: str
-    rectangle: Optional[Dict] = None
+    corners: Optional[List[List[float]]] = None
 
 
 class Settings(BaseModel):

@@ -52,7 +52,13 @@ export default function Dashboard({ sessions }: Props) {
             const bestResult = session.results.reduce((best, r) =>
               r.mean_delta_e < best.mean_delta_e ? r : best
             );
-            const isPortrait = session.rectangle ? session.rectangle.height > session.rectangle.width : false;
+            let isPortrait = false;
+            if (session.corners && session.corners.length >= 4) {
+              const [tl, tr, , bl] = session.corners;
+              const w = Math.sqrt((tr[0] - tl[0]) ** 2 + (tr[1] - tl[1]) ** 2);
+              const h = Math.sqrt((bl[0] - tl[0]) ** 2 + (bl[1] - tl[1]) ** 2);
+              isPortrait = h > w;
+            }
             const gridRows = session.card_type === 48 ? (isPortrait ? 6 : 8) : (isPortrait ? 6 : 4);
             const gridCols = session.card_type === 48 ? (isPortrait ? 8 : 6) : (isPortrait ? 4 : 6);
 

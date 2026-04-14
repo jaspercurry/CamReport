@@ -125,12 +125,12 @@ def delete_session(session_id: str):
     return {"ok": True}
 
 
-@app.patch("/api/sessions/{session_id}/rectangle")
-def update_rectangle(session_id: str, body: dict):
+@app.patch("/api/sessions/{session_id}/corners")
+def update_corners(session_id: str, body: dict):
     s = sessions.get(session_id)
     if not s:
         raise HTTPException(404, "Session not found")
-    s.rectangle = body.get("rectangle")
+    s.corners = body.get("corners")
     save_sessions()
     return s.dict()
 
@@ -141,17 +141,22 @@ def analyze(session_id: str, body: AnalysisRequest):
     if not s:
         raise HTTPException(404, "Session not found")
 
-    rect = body.rectangle or s.rectangle
-    if not rect:
-        raise HTTPException(400, "No rectangle defined. Draw a rectangle first.")
+    corners = body.corners or s.corners
+    if not corners or len(corners) != 4:
+        raise HTTPException(400, "4 corner points required. Click the corners of the card first.")
 
-    # Update stored rectangle
-    s.rectangle = rect
+    # Update stored corners
+    s.corners = corners
 
-    # Auto-detect portrait from rectangle aspect ratio
-    portrait = rect.get("height", 0) > rect.get("width", 0)
+    # Detect portrait from corner geometry
+    import numpy as np
+    tl, tr, br, bl = [np.array(c) for c in corners]
+    card_w = (np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / 2
+    card_h = (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)) / 2
+    portrait = card_h > card_w
+
     patches = get_patches(s.card_type, portrait=portrait)
-    result = analyze_image(body.image_path, rect, patches, s.card_type, settings.screenshots_dir)
+    result = analyze_image(body.image_path, corners, patches, s.card_type, settings.screenshots_dir)
     s.results.append(result)
     save_sessions()
     return result.dict()

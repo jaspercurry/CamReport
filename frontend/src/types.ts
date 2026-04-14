@@ -26,18 +26,15 @@ export interface AnalysisResult {
   timestamp: string;
 }
 
-export interface Rectangle {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+// 4 corner points: [x, y] in image coords
+// Order: top-left, top-right, bottom-right, bottom-left
+export type Corners = [number, number][];
 
 export interface CameraSession {
   id: string;
   name: string;
   card_type: number;
-  rectangle: Rectangle | null;
+  corners: Corners | null;
   results: AnalysisResult[];
 }
 
